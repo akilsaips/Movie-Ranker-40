@@ -1,69 +1,132 @@
-# Tested with the following package versions:
-# beautifulsoup4==4.12.2
-# Requests==2.31.0
-# selenium==4.15.1
-
-
-from bs4 import BeautifulSoup
+from flask import Flask, render_template, redirect, url_for, request
+from flask_bootstrap import Bootstrap5
+from flask_sqlalchemy import SQLAlchemy
+from flask_wtf import FlaskForm
+from wtforms import StringField, SubmitField
+from wtforms.validators import DataRequired
 import requests
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-import time
 
-# Part 1 - Scrape the links, addresses, and prices of the rental properties
+'''
+Red underlines? Install the required packages first: 
+Open the Terminal in PyCharm (bottom left). 
 
-header = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/84.0.4147.125 Safari/537.36",
-    "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8"
-}
+On Windows type:
+python -m pip install -r requirements.txt
 
-response = requests.get("https://appbrewery.github.io/Zillow-Clone/", headers=header)
+On MacOS type:
+pip3 install -r requirements.txt
 
-data = response.text
-soup = BeautifulSoup(data, "html.parser")
+This will install the packages from requirements.txt for this project.
+'''
 
-# Create a list of all the links on the page using a CSS Selector
-all_link_elements = soup.select(".StyledPropertyCardDataWrapper a")
-# Python list comprehension (covered in Day 26)
-all_links = [link["href"] for link in all_link_elements]
-print(f"There are {len(all_links)} links to individual listings in total: \n")
-print(all_links)
 
-# Create a list of all the addresses on the page using a CSS Selector
-# Remove newlines \n, pipe symbols |, and whitespaces to clean up the address data
-all_address_elements = soup.select(".StyledPropertyCardDataWrapper address")
-all_addresses = [address.get_text().replace(" | ", " ").strip() for address in all_address_elements]
-print(f"\n After having been cleaned up, the {len(all_addresses)} addresses now look like this: \n")
-print(all_addresses)
+MOVIE_DB_API_KEY = "USE_YOUR_OWN_CODE"
+MOVIE_DB_SEARCH_URL = "https://api.themoviedb.org/3/search/movie"
+MOVIE_DB_INFO_URL = "https://api.themoviedb.org/3/movie"
+MOVIE_DB_IMAGE_URL = "https://image.tmdb.org/t/p/w500"
 
-# Create a list of all the prices on the page using a CSS Selector
-# Get a clean dollar price and strip off any "+" symbols and "per month" /mo abbreviation
-all_price_elements = soup.select(".PropertyCardWrapper span")
-all_prices = [price.get_text().replace("/mo", "").split("+")[0] for price in all_price_elements if "$" in price.text]
-print(f"\n After having been cleaned up, the {len(all_prices)} prices now look like this: \n")
-print(all_prices)
+app = Flask(__name__)
+app.config['SECRET_KEY'] = '8BYkEfBA6O6donzWlSihBXox7C0sKR6b'
+Bootstrap5(app)
 
-# Part 2 - Fill in the Google Form using Selenium
+# CREATE DB
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///movies.db'
+db = SQLAlchemy()
+db.init_app(app)
 
-chrome_options = webdriver.ChromeOptions()
-chrome_options.add_experimental_option("detach", True)
-driver = webdriver.Chrome(options=chrome_options)
+# CREATE TABLE
 
-for n in range(len(all_links)):
-    # TODO: Add fill in the link to your own Google From
-    driver.get("YOUR_GOOGLE_FORM_LINK_HERE")
-    time.sleep(2)
 
-    address = driver.find_element(by=By.XPATH,
-                                  value='//*[@id="mG61Hd"]/div[2]/div/div[2]/div[1]/div/div/div[2]/div/div[1]/div/div[1]/input')
-    price = driver.find_element(by=By.XPATH,
-                                value='//*[@id="mG61Hd"]/div[2]/div/div[2]/div[2]/div/div/div[2]/div/div[1]/div/div[1]/input')
-    link = driver.find_element(by=By.XPATH,
-                               value='//*[@id="mG61Hd"]/div[2]/div/div[2]/div[3]/div/div/div[2]/div/div[1]/div/div[1]/input')
-    submit_button = driver.find_element(by=By.XPATH,
-                                        value='//*[@id="mG61Hd"]/div[2]/div/div[3]/div[1]/div[1]/div')
+class Movie(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(250), unique=True, nullable=False)
+    year = db.Column(db.Integer, nullable=False)
+    description = db.Column(db.String(500), nullable=False)
+    rating = db.Column(db.Float, nullable=True)
+    ranking = db.Column(db.Integer, nullable=True)
+    review = db.Column(db.String(250), nullable=True)
+    img_url = db.Column(db.String(250), nullable=False)
 
-    address.send_keys(all_addresses[n])
-    price.send_keys(all_prices[n])
-    link.send_keys(all_links[n])
-    submit_button.click()
+
+with app.app_context():
+    db.create_all()
+
+
+class FindMovieForm(FlaskForm):
+    title = StringField("Movie Title", validators=[DataRequired()])
+    submit = SubmitField("Add Movie")
+
+
+class RateMovieForm(FlaskForm):
+    rating = StringField("Your Rating Out of 10 e.g. 7.5")
+    review = StringField("Your Review")
+    submit = SubmitField("Done")
+
+
+@app.route("/")
+def home():
+    result = db.session.execute(db.select(Movie).order_by(Movie.rating))
+    all_movies = result.scalars().all()  # convert ScalarResult to Python List
+
+    for i in range(len(all_movies)):
+        all_movies[i].ranking = len(all_movies) - i
+    db.session.commit()
+
+    return render_template("index.html", movies=all_movies)
+
+
+@app.route("/add", methods=["GET", "POST"])
+def add_movie():
+    form = FindMovieForm()
+    if form.validate_on_submit():
+        movie_title = form.title.data
+        response = requests.get(MOVIE_DB_SEARCH_URL, params={
+                                "api_key": MOVIE_DB_API_KEY, "query": movie_title})
+        data = response.json()["results"]
+        return render_template("select.html", options=data)
+    return render_template("add.html", form=form)
+
+
+@app.route("/find")
+def find_movie():
+    movie_api_id = request.args.get("id")
+    if movie_api_id:
+        movie_api_url = f"{MOVIE_DB_INFO_URL}/{movie_api_id}"
+        response = requests.get(movie_api_url, params={
+                                "api_key": MOVIE_DB_API_KEY, "language": "en-US"})
+        data = response.json()
+        new_movie = Movie(
+            title=data["title"],
+            year=data["release_date"].split("-")[0],
+            img_url=f"{MOVIE_DB_IMAGE_URL}{data['poster_path']}",
+            description=data["overview"]
+        )
+        db.session.add(new_movie)
+        db.session.commit()
+        return redirect(url_for("rate_movie", id=new_movie.id))
+
+
+@app.route("/edit", methods=["GET", "POST"])
+def rate_movie():
+    form = RateMovieForm()
+    movie_id = request.args.get("id")
+    movie = db.get_or_404(Movie, movie_id)
+    if form.validate_on_submit():
+        movie.rating = float(form.rating.data)
+        movie.review = form.review.data
+        db.session.commit()
+        return redirect(url_for('home'))
+    return render_template("edit.html", movie=movie, form=form)
+
+
+@app.route("/delete")
+def delete_movie():
+    movie_id = request.args.get("id")
+    movie = db.get_or_404(Movie, movie_id)
+    db.session.delete(movie)
+    db.session.commit()
+    return redirect(url_for("home"))
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
